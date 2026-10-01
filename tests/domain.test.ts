@@ -79,7 +79,13 @@ test("duplicate payment IDs do not double count", () => {
 test("status transitions never reset payment history", () => {
   const s = setup();
   mutate(s, "entry", entry(22000));
-  mutate(s, "status", { id: "order-1", status: "Confirmed" });
+  mutate(s, "confirm", {
+    id: "order-1",
+    paymentId: "confirm-paid",
+    amount: 0,
+    date: "2026-10-01",
+    method: "Cash",
+  });
   assert.throws(() =>
     mutate(s, "status", { id: "order-1", status: "Confirmed" }),
   );
@@ -115,4 +121,160 @@ test("minimum guests, valid dates, and positive money enforced", () => {
   assert.throws(() => place(s, { ...data(), date: "2027-02-30" }, "x", "t"));
   assert.throws(() => mutate(s, "entry", entry(-1)));
   assert.throws(() => mutate(s, "entry", entry(1.5)));
+});
+const confirm = (amount: number) => ({
+  id: "order-1",
+  paymentId: "confirmation-1",
+  amount,
+  date: "2026-10-01",
+  method: "Bank transfer",
+  reference: "TEST",
+});
+test("confirmation atomically creates one deposit and leaves balance", () => {
+  const s = setup();
+  mutate(s, "confirm", confirm(5000));
+  assert.equal(s.orders[0].status, "Confirmed");
+  assert.equal(paid(s, "order-1"), 5000);
+  mutate(s, "confirm", confirm(5000));
+  assert.equal(s.entries.length, 1);
+  assert.equal(s.orders[0].total - paid(s, "order-1"), 17000);
+});
+test("failed confirmation does not change status or payments", () => {
+  const s = setup();
+  for (const n of [0, -1, 22001])
+    assert.throws(() => mutate(s, "confirm", confirm(n)));
+  assert.equal(s.orders[0].status, "Pending");
+  assert.equal(s.entries.length, 0);
+  assert.throws(() =>
+    mutate(s, "status", { id: "order-1", status: "Confirmed" }),
+  );
+});
+test("full confirmation uses only remaining balance", () => {
+  const s = setup();
+  mutate(s, "entry", entry(5000));
+  mutate(s, "confirm", confirm(17000));
+  assert.equal(paid(s, "order-1"), 22000);
+  assert.equal(s.entries.length, 2);
+});
+const payroll = {
+  workerType: "permanent",
+  basis: "monthly",
+  rate: 300000,
+  units: 1,
+  periodStart: "2026-10-01",
+  periodEnd: "2026-10-31",
+  overtimeHours: 4,
+  overtimeRate: 2000,
+  allowance: 10000,
+  deduction: 5000,
+};
+test("permanent monthly payroll computes base plus overtime and adjustments on server", () => {
+  const s = setup();
+  mutate(s, "bill", {
+    id: "p1",
+    kind: "payroll",
+    party: "Worker",
+    period: "Oct 2026",
+    amount: 1,
+    payroll,
+  });
+  assert.equal(s.bills[0].amount, 313000);
+  assert.equal(s.bills[0].payroll?.rate, 300000);
+});
+test("part-time supports hourly, daily and per-event rates", () => {
+  for (const basis of ["hourly", "daily", "event"]) {
+    const s = setup();
+    mutate(s, "bill", {
+      id: "p1",
+      kind: "payroll",
+      party: "Worker",
+      period: "Oct 2026",
+      amount: 1,
+      payroll: {
+        ...payroll,
+        workerType: "part-time",
+        basis,
+        rate: 1500,
+        units: 12.5,
+        overtimeHours: 0,
+        allowance: 0,
+        deduction: 0,
+      },
+    });
+    assert.equal(s.bills[0].amount, 18750);
+  }
+});
+test("invalid payroll periods, mismatched bases and excessive deductions are rejected", () => {
+  const s = setup();
+  for (const p of [
+    { ...payroll, periodEnd: "2026-09-01" },
+    { ...payroll, basis: "hourly" },
+    { ...payroll, deduction: 1000000 },
+    { ...payroll, workerType: "part-time" },
+  ])
+    assert.throws(() =>
+      mutate(s, "bill", {
+        id: "p1",
+        kind: "payroll",
+        party: "Worker",
+        period: "Oct 2026",
+        amount: 1,
+        payroll: p,
+      }),
+    );
+  assert.equal(s.bills.length, 0);
+});
+test("supplier totals use item prices and charges, ignoring submitted total", () => {
+  const s = setup();
+  mutate(s, "bill", {
+    id: "s1",
+    kind: "supplier",
+    party: "Supplier",
+    period: "INV-001",
+    amount: 1,
+    lines: [
+      { description: "Rice", quantity: 2.5, rate: 1200 },
+      { description: "Chicken", quantity: 3, rate: 2000 },
+    ],
+    tax: 600,
+    discount: 100,
+  });
+  assert.equal(s.bills[0].amount, 9500);
+});
+test("supplier references cannot be accidentally duplicated", () => {
+  const s = setup();
+  const b = {
+    id: "s1",
+    kind: "supplier",
+    party: "Supplier",
+    period: "INV-001",
+    amount: 5000,
+  };
+  mutate(s, "bill", b);
+  assert.throws(() => mutate(s, "bill", { ...b, id: "s2" }));
+  assert.equal(s.bills.length, 1);
+});
+test("receipts and payment references survive settlement", () => {
+  const s = setup();
+  mutate(s, "bill", {
+    id: "s1",
+    kind: "supplier",
+    party: "Supplier",
+    period: "INV-001",
+    amount: 5000,
+  });
+  const receipt = { path: "receipts/1234-abcd.pdf", name: "Invoice.pdf" };
+  mutate(s, "paybill", {
+    id: "s1",
+    amount: 2500,
+    paymentId: "p1",
+    date: "2026-10-01",
+    method: "Cash",
+    reference: "CASH-1",
+    receipt,
+  });
+  assert.equal(s.entries[0].billId, "s1");
+  assert.deepEqual(s.entries[0].receipt, receipt);
+  assert.equal(s.entries[0].reference, "CASH-1");
+  assert.equal(s.bills[0].paid, 2500);
 });

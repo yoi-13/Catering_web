@@ -1412,3 +1412,128 @@ aside nav button.selected {
     color: black;
   }
 }
+.upload-box {
+  border: 1px dashed #bdc9ae;
+  background: #f7f9f1;
+  padding: 16px;
+  border-radius: 9px;
+  margin: 15px 0;
+}
+.upload-box label {
+  margin-bottom: 7px;
+}
+.upload-box input {
+  background: white;
+}
+.receipt-link {
+  display: block;
+  color: #35634e;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+  text-decoration: underline;
+}
+.balance-box {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 16px;
+  background: #f0f4e7;
+  border-radius: 8px;
+  margin: 16px 0;
+  font-size: 12px;
+}
+.record-details {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+  margin-top: 12px;
+}
+.record-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+}
+.record-details form {
+  margin-top: 20px;
+}
+.payment-history {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.payment-history small {
+  display: block;
+  color: var(--muted);
+  line-height: 1.7;
+  margin-top: 6px;
+}
+.bill-line {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+.bill-line > b {
+  font-size: 12px;
+}
+.modal-shade {
+  position: fixed;
+  inset: 0;
+  background: #17271fb3;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 25px;
+  overflow: auto;
+}
+.payment-modal {
+  width: 600px;
+  max-width: 100%;
+  max-height: 90vh;
+  overflow: auto;
+  margin: 0;
+}
+.payment-modal h2 {
+  font-size: 26px;
+}
+.form-error {
+  color: #a04032;
+  font-size: 12px;
+}
+.badge.overdue {
+  background: #f7e3dc;
+  color: #9b4433;
+}
+.badge.partial {
+  background: #fff0ca;
+  color: #886514;
+}
+.badge.paid {
+  background: #e2efdf;
+  color: #427044;
+}
+@media (max-width: 760px) {
+  .bill-line {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    border-bottom: 1px solid var(--line);
+    padding: 15px 0;
+  }
+  .bill-line > label:first-child {
+    grid-column: 1/-1;
+  }
+  .modal-shade {
+    padding: 12px;
+  }
+  .payment-modal {
+    max-height: 94vh;
+  }
+  .balance-box {
+    gap: 10px;
+  }
+  .toolbar > .primary {
+    white-space: nowrap;
+  }
+}

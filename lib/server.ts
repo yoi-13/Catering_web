@@ -28,7 +28,7 @@ export async function admin() {
     createHmac("sha256", secret()).update(`${exp}.${nonce}`).digest("hex"),
   );
 }
-function db() {
+export function db() {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY)
     throw Error("Supabase is not configured.");
   return createClient(

@@ -33,6 +33,22 @@ export type Entry = {
   category: string;
   note: string;
   reference: string;
+  billId?: string;
+  receipt?: Attachment;
+};
+export type Attachment = { path: string; name: string };
+export type BillLine = { description: string; quantity: number; rate: number };
+export type Payroll = {
+  workerType: "permanent" | "part-time";
+  basis: "monthly" | "hourly" | "daily" | "event";
+  rate: number;
+  units: number;
+  periodStart: string;
+  periodEnd: string;
+  overtimeHours: number;
+  overtimeRate: number;
+  allowance: number;
+  deduction: number;
 };
 export type Bill = {
   id: string;
@@ -41,6 +57,15 @@ export type Bill = {
   period: string;
   amount: number;
   paid: number;
+  invoiceDate?: string;
+  dueDate?: string;
+  contact?: string;
+  notes?: string;
+  receipt?: Attachment;
+  lines?: BillLine[];
+  tax?: number;
+  discount?: number;
+  payroll?: Payroll;
 };
 export type Settings = {
   company: string;
@@ -48,6 +73,7 @@ export type Settings = {
   account: string;
   holder: string;
   qr: string;
+  qrFile?: Attachment;
   leadDays: number;
   minPax: number;
   capacity: number;
@@ -139,6 +165,11 @@ export const initial: State = {
 };
 const text = z.string().trim().min(1).max(250),
   amount = z.number().int().positive().max(100000000);
+export const attachmentSchema = z.object({
+  path: z.string().regex(/^(qr|receipts)\/[a-f0-9-]+\.(png|jpg|webp|pdf)$/),
+  name: text,
+});
+const nonnegative = z.number().int().min(0).max(100000000);
 const day = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -222,7 +253,54 @@ export function place(s: State, input: unknown, id: string, token: string) {
 }
 export function mutate(s: State, action: string, data: unknown) {
   const v = data as Record<string, unknown>;
-  if (action === "menu") {
+  if (action === "confirm") {
+    const p = z
+      .object({
+        id: text,
+        paymentId: text,
+        amount: nonnegative,
+        date: day,
+        method: z.enum(["Bank transfer", "QR payment", "Cash"]),
+        reference: z.string().max(150).default(""),
+        receipt: attachmentSchema.optional(),
+      })
+      .parse(v);
+    const o = s.orders.find((o) => o.id === p.id);
+    if (!o) throw Error("Order not found.");
+    const previous = s.entries.find((e) => e.id === p.paymentId);
+    if (previous) {
+      if (
+        previous.orderId !== o.id ||
+        previous.amount !== p.amount ||
+        previous.kind !== "payment"
+      )
+        throw Error("Payment reference already used.");
+      return;
+    }
+    if (o.status !== "Pending")
+      throw Error("Only pending orders can be confirmed.");
+    const due = o.total - paid(s, o.id);
+    if (p.amount > due || (due > 0 && p.amount === 0))
+      throw Error(
+        "Enter the deposit or full amount actually received, up to the outstanding balance.",
+      );
+    if (p.amount > 0)
+      s.entries.unshift({
+        id: p.paymentId,
+        date: p.date,
+        kind: "payment",
+        amount: p.amount,
+        orderId: o.id,
+        category: p.method,
+        reference: p.reference,
+        note:
+          p.amount === due
+            ? "Full balance received on confirmation"
+            : "Deposit received on confirmation",
+        receipt: p.receipt,
+      });
+    o.status = "Confirmed";
+  } else if (action === "menu") {
     const m = z
       .object({
         id: text,
@@ -247,7 +325,7 @@ export function mutate(s: State, action: string, data: unknown) {
     const o = s.orders.find((x) => x.id === id);
     if (!o) throw Error("Order not found.");
     const allowed: Record<string, string[]> = {
-      Pending: ["Confirmed", "Cancelled"],
+      Pending: ["Cancelled"],
       Confirmed: ["Preparing", "Cancelled"],
       Preparing: ["Completed", "Cancelled"],
       Completed: [],
@@ -267,6 +345,7 @@ export function mutate(s: State, action: string, data: unknown) {
         category: text,
         note: z.string().max(1000),
         reference: z.string().max(150),
+        receipt: attachmentSchema.optional(),
       })
       .parse(v);
     if (s.entries.some((x) => x.id === e.id)) return;
@@ -291,13 +370,96 @@ export function mutate(s: State, action: string, data: unknown) {
         kind: z.enum(["supplier", "payroll"]),
         period: text,
         amount,
+        invoiceDate: day.optional(),
+        dueDate: day.optional(),
+        contact: z.string().max(250).default(""),
+        notes: z.string().max(1000).default(""),
+        receipt: attachmentSchema.optional(),
+        lines: z
+          .array(
+            z.object({
+              description: text,
+              quantity: z.number().positive().max(10000),
+              rate: nonnegative,
+            }),
+          )
+          .min(1)
+          .max(50)
+          .optional(),
+        tax: nonnegative.default(0),
+        discount: nonnegative.default(0),
+        payroll: z
+          .object({
+            workerType: z.enum(["permanent", "part-time"]),
+            basis: z.enum(["monthly", "hourly", "daily", "event"]),
+            rate: amount,
+            units: z.number().positive().max(10000),
+            periodStart: day,
+            periodEnd: day,
+            overtimeHours: z.number().min(0).max(1000),
+            overtimeRate: nonnegative,
+            allowance: nonnegative,
+            deduction: nonnegative,
+          })
+          .optional(),
       })
       .parse(v);
     if (s.bills.some((x) => x.id === b.id)) return;
+    if (b.invoiceDate && b.dueDate && b.dueDate < b.invoiceDate)
+      throw Error("Due date must be on or after invoice date.");
+    if (b.kind === "supplier" && b.lines)
+      b.amount =
+        b.lines.reduce((n, l) => n + Math.round(l.quantity * l.rate), 0) +
+        b.tax -
+        b.discount;
+    if (b.kind === "payroll" && b.payroll) {
+      const p = b.payroll;
+      if (p.periodEnd < p.periodStart)
+        throw Error("Payroll period end must follow its start.");
+      if (
+        p.workerType === "permanent" &&
+        (p.basis !== "monthly" || p.units !== 1)
+      )
+        throw Error("Permanent payroll uses one monthly base salary.");
+      if (p.workerType === "part-time" && p.basis === "monthly")
+        throw Error("Part-time payroll uses hourly, daily or event rates.");
+      b.amount =
+        Math.round(p.rate * p.units) +
+        Math.round(p.overtimeHours * p.overtimeRate) +
+        p.allowance -
+        p.deduction;
+    }
+    if (
+      !Number.isSafeInteger(b.amount) ||
+      b.amount <= 0 ||
+      b.amount > 100000000
+    )
+      throw Error("Net amount must be positive and within the allowed limit.");
+    if (
+      s.bills.some(
+        (x) =>
+          x.kind === b.kind &&
+          x.party.toLowerCase() === b.party.toLowerCase() &&
+          x.period.toLowerCase() === b.period.toLowerCase(),
+      )
+    )
+      throw Error(
+        "A record for this person/supplier and reference already exists.",
+      );
     s.bills.unshift({ ...b, paid: 0 });
   } else if (action === "paybill") {
     const p = z
-      .object({ id: text, amount, paymentId: text, date: day })
+      .object({
+        id: text,
+        amount,
+        paymentId: text,
+        date: day,
+        method: z
+          .enum(["Bank transfer", "QR payment", "Cash"])
+          .default("Bank transfer"),
+        reference: z.string().max(150).default(""),
+        receipt: attachmentSchema.optional(),
+      })
       .parse(v);
     if (s.entries.some((x) => x.id === p.paymentId)) return;
     const b = s.bills.find((b) => b.id === p.id);
@@ -311,8 +473,10 @@ export function mutate(s: State, action: string, data: unknown) {
       kind: "expense",
       orderId: "",
       category: b.kind === "payroll" ? "Payroll" : "Suppliers",
-      note: `${b.party} — ${b.period}`,
-      reference: b.id,
+      note: `${b.party} — ${b.period} · ${p.method}`,
+      reference: p.reference || b.id,
+      billId: b.id,
+      receipt: p.receipt,
     });
   } else if (action === "settings") {
     s.settings = z
@@ -325,9 +489,12 @@ export function mutate(s: State, action: string, data: unknown) {
           .string()
           .max(2000)
           .refine(
-            (x) => !x || /^https:\/\//.test(x),
+            (x) => !x || /^https:\/\//.test(x) || x === "/api/files?qr=1",
             "QR image must use an HTTPS URL",
           ),
+        qrFile: attachmentSchema
+          .refine((x) => x.path.startsWith("qr/"), "Choose a QR image upload.")
+          .optional(),
         leadDays: z.number().int().min(0).max(365),
         minPax: z.number().int().min(1).max(10000),
         capacity: z.number().int().min(1).max(100000),

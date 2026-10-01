@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
+import { Accounts, ConfirmPayment, Upload, ReceiptLink } from "./Accounting";
+import type { Attachment } from "@/lib/domain";
 import {
   ArrowUpRight,
   ArrowRight,
@@ -56,10 +58,14 @@ const nav = [
   ["Orders", ClipboardList],
   ["Menus", UtensilsCrossed],
   ["Finances", Wallet],
-  ["Bills & payroll", Users],
+  ["Suppliers", Users],
+  ["Payroll", Users],
   ["Settings", Settings],
 ] as const;
 export default function App({ connected }: { connected: boolean }) {
+  const [confirmOrder, setConfirmOrder] = useState<Order | null>(null);
+  const [qrDraft, setQrDraft] = useState<Attachment | null | undefined>();
+  const [qrUploading, setQrUploading] = useState(false);
   const [state, setState] = useState<State>(structuredClone(initial));
   const [ready, setReady] = useState(false);
   const [view, setView] = useState("shop");
@@ -344,6 +350,21 @@ export default function App({ connected }: { connected: boolean }) {
           ? "CONNECTED WORKSPACE · Supabase storage"
           : "EXPERIMENTAL DEMO · Data stays in this browser · No real payments are processed"}
       </div>
+      {confirmOrder && (
+        <ConfirmPayment
+          order={confirmOrder}
+          state={state}
+          connected={connected}
+          busy={busy}
+          cancel={() => setConfirmOrder(null)}
+          submit={(data) =>
+            run(async () => {
+              await change("confirm", data);
+              setConfirmOrder(null);
+            })
+          }
+        />
+      )}
       {notice && (
         <div className="toast" role="status">
           {notice}
@@ -653,13 +674,17 @@ export default function App({ connected }: { connected: boolean }) {
                                 key={status}
                                 onClick={() =>
                                   run(() =>
-                                    change("status", { id: o.id, status }),
+                                    status === "Confirmed"
+                                      ? Promise.resolve(setConfirmOrder(o))
+                                      : change("status", { id: o.id, status }),
                                   )
                                 }
                               >
                                 {status === "Cancelled"
                                   ? "Cancel order"
-                                  : "Mark " + status.toLowerCase()}
+                                  : status === "Confirmed"
+                                    ? "Confirm & record payment"
+                                    : "Mark " + status.toLowerCase()}
                               </button>
                             ))}
                             <button
@@ -933,6 +958,7 @@ export default function App({ connected }: { connected: boolean }) {
                             <td>{e.category}</td>
                             <td>
                               {e.reference}
+                              <ReceiptLink file={e.receipt} />
                               <small className="block muted">{e.note}</small>
                             </td>
                             <td className="number">
@@ -952,123 +978,16 @@ export default function App({ connected }: { connected: boolean }) {
                   </div>
                 </>
               )}
-              {section === "Bills & payroll" && (
-                <>
-                  <div className="stats">
-                    <Stat
-                      title="Supplier balances"
-                      value={money(
-                        state.bills
-                          .filter((b) => b.kind === "supplier")
-                          .reduce((a, b) => a + b.amount - b.paid, 0),
-                      )}
-                      hint="Unpaid supplier bills"
-                    />
-                    <Stat
-                      title="Payroll balances"
-                      value={money(
-                        state.bills
-                          .filter((b) => b.kind === "payroll")
-                          .reduce((a, b) => a + b.amount - b.paid, 0),
-                      )}
-                      hint="Approved pay by period"
-                    />
-                  </div>
-                  <form
-                    className="panel"
-                    onSubmit={(e) => {
-                      const f = form(e),
-                        el = e.currentTarget;
-                      run(async () => {
-                        await change("bill", {
-                          ...f,
-                          id: uid(),
-                          amount: Math.round(Number(f.amount) * 100),
-                        });
-                        el.reset();
-                      });
-                    }}
-                  >
-                    <h3>Add a bill or approved payroll</h3>
-                    <p className="muted small">
-                      Enter a separate payroll record for each worker and pay
-                      period. This preserves past earnings when rates change.
-                    </p>
-                    <div className="three-col">
-                      <label>
-                        Type
-                        <select name="kind">
-                          <option value="supplier">Supplier bill</option>
-                          <option value="payroll">Approved payroll</option>
-                        </select>
-                      </label>
-                      <Field label="Supplier / worker name" name="party" />
-                      <Field
-                        label="Invoice reference / pay period"
-                        name="period"
-                      />
-                      <Field
-                        label="Amount owed (RM)"
-                        name="amount"
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                      />
-                    </div>
-                    <button className="primary" disabled={busy}>
-                      Add record
-                    </button>
-                  </form>
-                  <div className="order-grid">
-                    {state.bills.map((b) => (
-                      <div className="panel" key={b.id}>
-                        <div className="panel-heading">
-                          <h3>{b.party}</h3>
-                          {badge(b.kind)}
-                        </div>
-                        <p className="muted">{b.period}</p>
-                        <div className="row between">
-                          <span>Total {money(b.amount)}</span>
-                          <b>Due {money(b.amount - b.paid)}</b>
-                        </div>
-                        {b.paid < b.amount ? (
-                          <form
-                            className="row top-space"
-                            onSubmit={(e) => {
-                              const f = form(e);
-                              run(() =>
-                                change("paybill", {
-                                  id: b.id,
-                                  amount: Math.round(Number(f.amount) * 100),
-                                  paymentId: uid(),
-                                  date: today(),
-                                }),
-                              );
-                            }}
-                          >
-                            <input
-                              aria-label={"Payment to " + b.party}
-                              name="amount"
-                              type="number"
-                              required
-                              min="0.01"
-                              max={(b.amount - b.paid) / 100}
-                              step="0.01"
-                              placeholder="Amount paid (RM)"
-                            />
-                            <button className="primary" disabled={busy}>
-                              Record payment
-                            </button>
-                          </form>
-                        ) : (
-                          <p className="success">
-                            <Check size={16} /> Fully paid
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </>
+              {(section === "Suppliers" || section === "Payroll") && (
+                <Accounts
+                  key={section}
+                  kind={section === "Suppliers" ? "supplier" : "payroll"}
+                  state={state}
+                  connected={connected}
+                  busy={busy}
+                  change={change}
+                  run={run}
+                />
               )}
               {section === "Settings" && (
                 <form
@@ -1078,6 +997,19 @@ export default function App({ connected }: { connected: boolean }) {
                     run(() =>
                       change("settings", {
                         ...f,
+                        qrFile:
+                          qrDraft === undefined
+                            ? state.settings.qrFile
+                            : qrDraft || undefined,
+                        qr: (
+                          qrDraft === undefined
+                            ? state.settings.qrFile
+                            : qrDraft
+                        )
+                          ? "/api/files?qr=1"
+                          : qrDraft === null
+                            ? ""
+                            : state.settings.qr,
                         leadDays: Number(f.leadDays),
                         minPax: Number(f.minPax),
                         capacity: Number(f.capacity),
@@ -1116,13 +1048,46 @@ export default function App({ connected }: { connected: boolean }) {
                       required={false}
                     />
                   </div>
-                  <Field
-                    label="Merchant QR image URL (HTTPS)"
-                    name="qr"
-                    type="url"
-                    value={state.settings.qr}
-                    required={false}
+                  <Upload
+                    kind="qr"
+                    connected={connected}
+                    value={
+                      qrDraft === undefined
+                        ? state.settings.qrFile
+                        : qrDraft || undefined
+                    }
+                    onChange={(f) => setQrDraft(f || null)}
+                    onPending={setQrUploading}
                   />
+                  {(qrDraft === undefined
+                    ? state.settings.qrFile
+                    : qrDraft) && (
+                    <img
+                      className="qr top-space"
+                      alt="Merchant QR preview"
+                      src={
+                        "/api/files?path=" +
+                        encodeURIComponent(
+                          (qrDraft === undefined
+                            ? state.settings.qrFile
+                            : qrDraft)!.path,
+                        )
+                      }
+                    />
+                  )}
+                  {!state.settings.qrFile &&
+                    qrDraft === undefined &&
+                    state.settings.qr && (
+                      <img
+                        className="qr"
+                        src={state.settings.qr}
+                        alt="Current merchant QR"
+                      />
+                    )}
+                  <p className="muted small">
+                    Choose an image, then Save settings. Replacing the image
+                    preserves the original file for existing records.
+                  </p>
                   <h4>Booking rules</h4>
                   <div className="three-col">
                     <Field
@@ -1147,7 +1112,7 @@ export default function App({ connected }: { connected: boolean }) {
                       value={state.settings.capacity}
                     />
                   </div>
-                  <button className="primary" disabled={busy}>
+                  <button className="primary" disabled={busy || qrUploading}>
                     Save settings
                   </button>
                   <p className="muted small">

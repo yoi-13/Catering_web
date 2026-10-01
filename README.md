@@ -27,7 +27,7 @@ Open http://localhost:3000. Choose **Workspace**, username **demo**, password **
 ## Supabase setup
 
 1. Create a new Supabase project, preferably in Singapore for a nearby test audience. Choose a strong database password in Supabase; the demo password is only for the application's test login.
-2. Open SQL Editor and run `supabase/migrations/001_v1.sql`.
+2. Open SQL Editor and run `supabase/migrations/001_v1.sql`, then `supabase/migrations/002_documents.sql`.
 3. Copy `.env.example` to `.env.local` for local development. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from the project API settings. Keep the service role key server-side; never put it in a `NEXT_PUBLIC_` variable or commit it.
 4. Set `ADMIN_USERNAME=demo` and `ADMIN_PASSWORD=123456` only for this fictional-data experiment, as requested. Use a different strong password before using any real data.
 5. Generate a random session secret with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` and store it as `SESSION_SECRET`.
@@ -46,7 +46,7 @@ Import this repository, select Next.js, and use the repository root as the root 
 
 ## Payment setup
 
-Workspace → Settings lets you enter bank details and an HTTPS URL for an existing merchant QR image. The app does not generate banking QR payloads or pretend to confirm a transfer. A customer selects a method, receives instructions, and uses the short order reference. The owner checks their bank or receives cash, then records the actual payment in Finances. Partial payments and refunds adjust the balance.
+Workspace → Settings lets you enter bank details and upload an existing merchant QR image (PNG, JPEG or WebP, up to 3 MB). The app does not generate banking QR payloads or pretend to confirm a transfer. A customer selects a method, receives instructions, and uses the short order reference. The owner checks their bank or receives cash, then uses Confirm & record payment on a pending order. The deposit or full balance and order confirmation save atomically; Finances immediately shows the transaction. Later payments and refunds can still be recorded in Finances. Partial payments and refunds adjust the balance.
 
 ## Run checks
 
@@ -67,9 +67,9 @@ The application uses standard Node.js and can run on your own server with `npm c
 - This is an experiment, not a production accounting or payroll system.
 - Shared data is stored as one versioned JSON aggregate in PostgreSQL. Optimistic compare-and-swap updates prevent overwriting concurrent changes. This is simple and portable for small tests; split it into normalized tables and paginated queries before larger workloads. The internal audit list retains only the latest 500 mutations.
 - There is one administrator account configured by environment variables. No staff roles, email notifications, gateway webhooks, password recovery or automated bank reconciliation yet.
-- QR image hosting is external. There are no file uploads, receipt attachments or generated payment-receipt PDFs. Browser printing creates an order summary.
+- QR images and receipt/invoice attachments are uploaded to private Supabase storage. Receipts accept images or PDF up to 3 MB and require administrator access; only the saved merchant QR image is publicly viewable. Browser printing creates an order summary; generated payment-receipt PDFs are not implemented.
 - Menus use illustrative emoji artwork. Packages are individually priced catalogue entries; configurable component bundles and photo uploads are future work.
-- Payroll amounts are entered after approval. Automatic rate-based payroll and worker assignment scheduling from the legacy project have not been migrated.
+- Payroll calculates permanent monthly salaries and part-time hourly, daily or per-event earnings, plus entered overtime/allowances minus deductions. Statutory deduction rules, leave proration and worker assignment scheduling are not automated.
 - Prices are in MYR. Dates and report cutoffs use UTC. Delivery fees, taxes, service-area rules and formal financial statements are not implemented.
 - Client demo state can be edited through developer tools. Connected mode enforces the rules on the server.
 - Duplicate IDs protect ledger retries and bill settlement. A retried checkout after an uncertain network failure should first check its tracking link; checkout idempotency is not yet implemented.
@@ -78,3 +78,9 @@ The application uses standard Node.js and can run on your own server with `npm c
 ## License
 
 MIT for the new V1 code. Dependency licenses remain with their respective authors.
+
+## V1 improvements — October 2026
+
+Suppliers and Payroll now have separate navigation, search, status filters, amounts due and payment history. Supplier invoices include item quantities/unit prices, charges, discounts, invoice/due dates, contacts and attachments. Payroll records preserve worker type, salary basis, period dates, rates, units and adjustments. Supplier/payroll payments save receipt attachments and references to the expense ledger. Existing V1 records are retained as legacy approved amounts.
+
+Confirmation applies only to pending orders and requires money received unless the order was already fully paid. Repeated confirmation with the same payment ID does not duplicate the transaction. Existing confirmed orders are not retroactively marked paid.
