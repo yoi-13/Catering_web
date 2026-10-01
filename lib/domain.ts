@@ -34,6 +34,10 @@ export type Entry = {
   note: string;
   reference: string;
   billId?: string;
+  supplierId?: string;
+  supplierTransactionId?: string;
+  workerId?: string;
+  workerPaymentId?: string;
   receipt?: Attachment;
 };
 export type Attachment = { path: string; name: string };
@@ -67,6 +71,56 @@ export type Bill = {
   discount?: number;
   payroll?: Payroll;
 };
+export type SupplierTransaction = {
+  id: string;
+  reference: string;
+  invoiceDate: string;
+  dueDate?: string;
+  amount: number;
+  paid: number;
+  notes: string;
+  receipt?: Attachment;
+  lines: BillLine[];
+  tax: number;
+  discount: number;
+};
+export type Supplier = {
+  id: string;
+  name: string;
+  contact: string;
+  notes: string;
+  transactions: SupplierTransaction[];
+};
+export type WorkerPayment = {
+  id: string;
+  period: string;
+  periodStart: string;
+  periodEnd: string;
+  baseRate: number;
+  units: number;
+  overtimeHours: number;
+  overtimeRate: number;
+  bonus: number;
+  allowance: number;
+  advance: number;
+  deduction: number;
+  amount: number;
+  date: string;
+  method: "Bank transfer" | "QR payment" | "Cash";
+  reference: string;
+  notes: string;
+  receipt?: Attachment;
+};
+export type Worker = {
+  id: string;
+  name: string;
+  contact: string;
+  workerType: "permanent" | "part-time";
+  basis: "monthly" | "hourly" | "daily" | "event";
+  defaultRate: number;
+  notes: string;
+  payments: WorkerPayment[];
+};
 export type Settings = {
   company: string;
   bank: string;
@@ -83,6 +137,8 @@ export type State = {
   orders: Order[];
   entries: Entry[];
   bills: Bill[];
+  suppliers: Supplier[];
+  workers: Worker[];
   settings: Settings;
   audit: { at: string; action: string }[];
 };
@@ -151,6 +207,8 @@ export const initial: State = {
   orders: [],
   entries: [],
   bills: [],
+  suppliers: [],
+  workers: [],
   settings: {
     company: "Gather Catering",
     bank: "",
@@ -212,6 +270,156 @@ export function paid(s: State, id: string) {
       0,
     );
 }
+const slug = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "record";
+
+export function normalizeState(value: State): State {
+  const s = value as State;
+  s.bills ??= [];
+  s.suppliers ??= [];
+  s.workers ??= [];
+  s.entries ??= [];
+  for (const b of s.bills) {
+    if (b.kind === "supplier") {
+      let supplier = s.suppliers.find(
+        (x) => x.name.toLowerCase() === b.party.toLowerCase(),
+      );
+      if (!supplier) {
+        supplier = {
+          id: `supplier-${slug(b.party)}`,
+          name: b.party,
+          contact: b.contact ?? "",
+          notes: "Imported from the earlier bills workspace.",
+          transactions: [],
+        };
+        s.suppliers.push(supplier);
+      }
+      if (!supplier.transactions.some((x) => x.id === b.id))
+        supplier.transactions.push({
+          id: b.id,
+          reference: b.period,
+          invoiceDate: b.invoiceDate ?? today(),
+          dueDate: b.dueDate,
+          amount: b.amount,
+          paid: b.paid,
+          notes: b.notes ?? "",
+          receipt: b.receipt,
+          lines: b.lines ?? [],
+          tax: b.tax ?? 0,
+          discount: b.discount ?? 0,
+        });
+      for (const e of s.entries.filter((e) => e.billId === b.id)) {
+        e.supplierId = supplier.id;
+        e.supplierTransactionId = b.id;
+      }
+    } else {
+      const p = b.payroll;
+      let worker = s.workers.find(
+        (x) => x.name.toLowerCase() === b.party.toLowerCase(),
+      );
+      if (!worker) {
+        worker = {
+          id: `worker-${slug(b.party)}`,
+          name: b.party,
+          contact: b.contact ?? "",
+          workerType: p?.workerType ?? "permanent",
+          basis: p?.basis ?? "monthly",
+          defaultRate: p?.rate ?? b.amount,
+          notes: "Imported from the earlier payroll workspace.",
+          payments: [],
+        };
+        s.workers.push(worker);
+      }
+      if (!worker.payments.some((x) => x.id === b.id)) {
+        const expense = s.entries.find((e) => e.billId === b.id);
+        worker.payments.push({
+          id: b.id,
+          period: b.period,
+          periodStart: p?.periodStart ?? b.invoiceDate ?? today(),
+          periodEnd: p?.periodEnd ?? b.dueDate ?? b.invoiceDate ?? today(),
+          baseRate: p?.rate ?? b.amount,
+          units: p?.units ?? 1,
+          overtimeHours: p?.overtimeHours ?? 0,
+          overtimeRate: p?.overtimeRate ?? 0,
+          bonus: 0,
+          allowance: p?.allowance ?? 0,
+          advance: 0,
+          deduction: p?.deduction ?? 0,
+          amount: b.amount,
+          date: expense?.date ?? b.invoiceDate ?? today(),
+          method: "Bank transfer",
+          reference: expense?.reference ?? b.id,
+          notes: b.notes ?? "",
+          receipt: expense?.receipt ?? b.receipt,
+        });
+        for (const e of s.entries.filter((e) => e.billId === b.id)) {
+          e.workerId = worker.id;
+          e.workerPaymentId = b.id;
+        }
+      }
+    }
+  }
+  s.bills = [];
+  return s;
+}
+
+export function monthlyReport(s: State, month: string) {
+  normalizeState(s);
+  const orders = s.orders.filter(
+    (o) => o.date.startsWith(month) && o.status !== "Cancelled",
+  );
+  const entries = s.entries.filter((e) => e.date.startsWith(month));
+  const supplierTransactions = s.suppliers.flatMap((supplier) =>
+    supplier.transactions
+      .filter((transaction) => transaction.invoiceDate.startsWith(month))
+      .map((transaction) => ({ supplier, transaction })),
+  );
+  const payroll = s.workers.flatMap((worker) =>
+    worker.payments
+      .filter((payment) => payment.date.startsWith(month))
+      .map((payment) => ({ worker, payment })),
+  );
+  const received = entries.reduce(
+    (sum, e) =>
+      sum +
+      (e.kind === "payment" ? e.amount : e.kind === "refund" ? -e.amount : 0),
+    0,
+  );
+  const supplierPaid = entries
+    .filter((e) => e.kind === "expense" && e.category === "Suppliers")
+    .reduce((sum, e) => sum + e.amount, 0);
+  const payrollPaid = entries
+    .filter((e) => e.kind === "expense" && e.category === "Payroll")
+    .reduce((sum, e) => sum + e.amount, 0);
+  const otherExpenses = entries
+    .filter(
+      (e) =>
+        e.kind === "expense" &&
+        e.category !== "Suppliers" &&
+        e.category !== "Payroll",
+    )
+    .reduce((sum, e) => sum + e.amount, 0);
+  const orderValue = orders.reduce((sum, o) => sum + o.total, 0);
+  return {
+    month,
+    orders,
+    entries,
+    supplierTransactions,
+    payroll,
+    orderValue,
+    received,
+    supplierPaid,
+    payrollPaid,
+    otherExpenses,
+    expenses: supplierPaid + payrollPaid + otherExpenses,
+    netCash: received - supplierPaid - payrollPaid - otherExpenses,
+    outstanding: orders.reduce((sum, o) => sum + o.total - paid(s, o.id), 0),
+    guests: orders.reduce((sum, o) => sum + o.pax, 0),
+  };
+}
 export function place(s: State, input: unknown, id: string, token: string) {
   const v = checkout.parse(input);
   const earliest = new Date();
@@ -252,6 +460,7 @@ export function place(s: State, input: unknown, id: string, token: string) {
   return order;
 }
 export function mutate(s: State, action: string, data: unknown) {
+  normalizeState(s);
   const v = data as Record<string, unknown>;
   if (action === "confirm") {
     const p = z
@@ -362,6 +571,253 @@ export function mutate(s: State, action: string, data: unknown) {
         throw Error("Refund exceeds money received.");
     } else e.orderId = "";
     s.entries.unshift(e);
+  } else if (action === "add_supplier") {
+    const supplier = z
+      .object({
+        id: text,
+        name: text,
+        contact: z.string().max(250).default(""),
+        notes: z.string().max(1000).default(""),
+      })
+      .parse(v);
+    if (s.suppliers.some((x) => x.id === supplier.id)) return;
+    if (
+      s.suppliers.some(
+        (x) => x.name.toLowerCase() === supplier.name.toLowerCase(),
+      )
+    )
+      throw Error(
+        "This supplier already exists. Open its card to add a transaction.",
+      );
+    s.suppliers.unshift({ ...supplier, transactions: [] });
+  } else if (action === "add_supplier_transaction") {
+    const transaction = z
+      .object({
+        supplierId: text,
+        id: text,
+        reference: text,
+        invoiceDate: day,
+        dueDate: day.optional(),
+        amount,
+        notes: z.string().max(1000).default(""),
+        receipt: attachmentSchema.optional(),
+        lines: z
+          .array(
+            z.object({
+              description: text,
+              quantity: z.number().positive().max(10000),
+              rate: nonnegative,
+            }),
+          )
+          .max(50)
+          .default([]),
+        tax: nonnegative.default(0),
+        discount: nonnegative.default(0),
+      })
+      .parse(v);
+    const supplier = s.suppliers.find((x) => x.id === transaction.supplierId);
+    if (!supplier) throw Error("Supplier not found.");
+    if (supplier.transactions.some((x) => x.id === transaction.id)) return;
+    if (
+      supplier.transactions.some(
+        (x) =>
+          x.reference.toLowerCase() === transaction.reference.toLowerCase(),
+      )
+    )
+      throw Error(
+        "This transaction reference already exists for the supplier.",
+      );
+    if (transaction.dueDate && transaction.dueDate < transaction.invoiceDate)
+      throw Error("Due date must be on or after the invoice date.");
+    if (transaction.lines.length)
+      transaction.amount =
+        transaction.lines.reduce(
+          (sum, line) => sum + Math.round(line.quantity * line.rate),
+          0,
+        ) +
+        transaction.tax -
+        transaction.discount;
+    if (transaction.amount <= 0)
+      throw Error("Transaction total must be positive.");
+    const { supplierId: _supplierId, ...record } = transaction;
+    supplier.transactions.unshift({ ...record, paid: 0 });
+  } else if (action === "pay_supplier_transaction") {
+    const payment = z
+      .object({
+        supplierId: text,
+        transactionId: text,
+        paymentId: text,
+        amount,
+        date: day,
+        method: z.enum(["Bank transfer", "QR payment", "Cash"]),
+        reference: z.string().max(150).default(""),
+        receipt: attachmentSchema.optional(),
+      })
+      .parse(v);
+    if (s.entries.some((x) => x.id === payment.paymentId)) return;
+    const supplier = s.suppliers.find((x) => x.id === payment.supplierId);
+    const transaction = supplier?.transactions.find(
+      (x) => x.id === payment.transactionId,
+    );
+    if (!supplier || !transaction)
+      throw Error("Supplier transaction not found.");
+    if (payment.amount > transaction.amount - transaction.paid)
+      throw Error("Payment exceeds the outstanding balance.");
+    transaction.paid += payment.amount;
+    s.entries.unshift({
+      id: payment.paymentId,
+      date: payment.date,
+      kind: "expense",
+      amount: payment.amount,
+      orderId: "",
+      category: "Suppliers",
+      note: `${supplier.name} — ${transaction.reference} · ${payment.method}`,
+      reference: payment.reference || transaction.reference,
+      supplierId: supplier.id,
+      supplierTransactionId: transaction.id,
+      receipt: payment.receipt,
+    });
+  } else if (action === "delete_supplier_transaction") {
+    const deletion = z
+      .object({
+        supplierId: text,
+        transactionId: text,
+        confirmed: z.literal(true),
+      })
+      .parse(v);
+    const supplier = s.suppliers.find((x) => x.id === deletion.supplierId);
+    if (!supplier) throw Error("Supplier not found.");
+    supplier.transactions = supplier.transactions.filter(
+      (x) => x.id !== deletion.transactionId,
+    );
+    s.entries = s.entries.filter(
+      (e) => e.supplierTransactionId !== deletion.transactionId,
+    );
+  } else if (action === "delete_supplier") {
+    const deletion = z
+      .object({ id: text, confirmed: z.literal(true) })
+      .parse(v);
+    const supplier = s.suppliers.find((x) => x.id === deletion.id);
+    if (!supplier) throw Error("Supplier not found.");
+    const ids = new Set(supplier.transactions.map((x) => x.id));
+    s.entries = s.entries.filter(
+      (e) =>
+        e.supplierId !== supplier.id && !ids.has(e.supplierTransactionId ?? ""),
+    );
+    s.suppliers = s.suppliers.filter((x) => x.id !== supplier.id);
+  } else if (action === "add_worker") {
+    const worker = z
+      .object({
+        id: text,
+        name: text,
+        contact: z.string().max(250).default(""),
+        workerType: z.enum(["permanent", "part-time"]),
+        basis: z.enum(["monthly", "hourly", "daily", "event"]),
+        defaultRate: amount,
+        notes: z.string().max(1000).default(""),
+      })
+      .parse(v);
+    if (s.workers.some((x) => x.id === worker.id)) return;
+    if (
+      s.workers.some((x) => x.name.toLowerCase() === worker.name.toLowerCase())
+    )
+      throw Error(
+        "This worker already exists. Open the worker card to record pay.",
+      );
+    if (worker.workerType === "permanent" && worker.basis !== "monthly")
+      throw Error("Permanent workers use a monthly base salary.");
+    if (worker.workerType === "part-time" && worker.basis === "monthly")
+      throw Error("Part-time workers use hourly, daily or event rates.");
+    s.workers.unshift({ ...worker, payments: [] });
+  } else if (action === "record_worker_payment") {
+    const payment = z
+      .object({
+        workerId: text,
+        id: text,
+        period: text,
+        periodStart: day,
+        periodEnd: day,
+        units: z.number().positive().max(10000),
+        overtimeHours: z.number().min(0).max(1000),
+        overtimeRate: nonnegative,
+        bonus: nonnegative,
+        allowance: nonnegative,
+        advance: nonnegative,
+        deduction: nonnegative,
+        date: day,
+        method: z.enum(["Bank transfer", "QR payment", "Cash"]),
+        reference: z.string().max(150).default(""),
+        notes: z.string().max(1000).default(""),
+        receipt: attachmentSchema.optional(),
+      })
+      .parse(v);
+    const worker = s.workers.find((x) => x.id === payment.workerId);
+    if (!worker) throw Error("Worker not found.");
+    if (worker.payments.some((x) => x.id === payment.id)) return;
+    if (
+      worker.payments.some(
+        (x) => x.period.toLowerCase() === payment.period.toLowerCase(),
+      )
+    )
+      throw Error(
+        "A payroll record already exists for this worker and period.",
+      );
+    if (payment.periodEnd < payment.periodStart)
+      throw Error("Payroll period end must follow its start.");
+    const units = worker.workerType === "permanent" ? 1 : payment.units;
+    const total =
+      Math.round(worker.defaultRate * units) +
+      Math.round(payment.overtimeHours * payment.overtimeRate) +
+      payment.bonus +
+      payment.allowance +
+      payment.advance -
+      payment.deduction;
+    if (!Number.isSafeInteger(total) || total <= 0 || total > 100000000)
+      throw Error("Net pay must be positive and within the allowed limit.");
+    const { workerId: _workerId, ...details } = payment;
+    const record: WorkerPayment = {
+      ...details,
+      units,
+      baseRate: worker.defaultRate,
+      amount: total,
+    };
+    worker.payments.unshift(record);
+    s.entries.unshift({
+      id: `expense-${record.id}`,
+      date: record.date,
+      kind: "expense",
+      amount: record.amount,
+      orderId: "",
+      category: "Payroll",
+      note: `${worker.name} — ${record.period} · ${record.method}`,
+      reference: record.reference || record.period,
+      workerId: worker.id,
+      workerPaymentId: record.id,
+      receipt: record.receipt,
+    });
+  } else if (action === "delete_worker_payment") {
+    const deletion = z
+      .object({ workerId: text, paymentId: text, confirmed: z.literal(true) })
+      .parse(v);
+    const worker = s.workers.find((x) => x.id === deletion.workerId);
+    if (!worker) throw Error("Worker not found.");
+    worker.payments = worker.payments.filter(
+      (x) => x.id !== deletion.paymentId,
+    );
+    s.entries = s.entries.filter(
+      (e) => e.workerPaymentId !== deletion.paymentId,
+    );
+  } else if (action === "delete_worker") {
+    const deletion = z
+      .object({ id: text, confirmed: z.literal(true) })
+      .parse(v);
+    const worker = s.workers.find((x) => x.id === deletion.id);
+    if (!worker) throw Error("Worker not found.");
+    const ids = new Set(worker.payments.map((x) => x.id));
+    s.entries = s.entries.filter(
+      (e) => e.workerId !== worker.id && !ids.has(e.workerPaymentId ?? ""),
+    );
+    s.workers = s.workers.filter((x) => x.id !== worker.id);
   } else if (action === "bill") {
     const b = z
       .object({

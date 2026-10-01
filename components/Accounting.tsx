@@ -1,5 +1,5 @@
 "use client";
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import {
   type Attachment,
   type State,
@@ -920,5 +920,928 @@ export function Accounts({
         </div>
       )}
     </>
+  );
+}
+
+type WorkspaceProps = {
+  state: State;
+  connected: boolean;
+  busy: boolean;
+  change: (action: string, data: unknown) => Promise<void>;
+  run: (work: () => Promise<void>) => void;
+};
+
+function DangerButton({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button type="button" className="danger-button" onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+export function SupplierWorkspace(props: WorkspaceProps) {
+  const { state, connected, busy, change, run } = props;
+  const [adding, setAdding] = useState(false);
+  const [open, setOpen] = useState<string | null>(null);
+  const total = state.suppliers.reduce(
+    (sum, supplier) =>
+      sum + supplier.transactions.reduce((n, t) => n + t.amount, 0),
+    0,
+  );
+  const paidTotal = state.suppliers.reduce(
+    (sum, supplier) =>
+      sum + supplier.transactions.reduce((n, t) => n + t.paid, 0),
+    0,
+  );
+  return (
+    <div className="workspace-stack">
+      <div className="stats">
+        <div className="stat">
+          <span>Suppliers</span>
+          <strong>{state.suppliers.length}</strong>
+          <small>One profile per supplier</small>
+        </div>
+        <div className="stat">
+          <span>Purchases</span>
+          <strong>{money(total)}</strong>
+          <small>All recorded invoices</small>
+        </div>
+        <div className="stat">
+          <span>Paid</span>
+          <strong>{money(paidTotal)}</strong>
+          <small>Supplier payments made</small>
+        </div>
+        <div className="stat">
+          <span>Outstanding</span>
+          <strong>{money(total - paidTotal)}</strong>
+          <small>Still due to suppliers</small>
+        </div>
+      </div>
+      <div className="toolbar workspace-toolbar">
+        <p className="muted">
+          Add a supplier once, then keep every invoice and payment inside its
+          profile.
+        </p>
+        <button className="primary" onClick={() => setAdding((x) => !x)}>
+          + Add supplier
+        </button>
+      </div>
+      {adding && (
+        <form
+          className="panel compact-form"
+          onSubmit={(e) => {
+            const f = fields(e);
+            run(async () => {
+              await change("add_supplier", {
+                id: crypto.randomUUID(),
+                name: f.name,
+                contact: f.contact,
+                notes: f.notes,
+              });
+              setAdding(false);
+            });
+          }}
+        >
+          <h3>New supplier profile</h3>
+          <div className="three-col">
+            <Input name="name" label="Supplier / company" />
+            <Input name="contact" label="Contact" required={false} />
+            <Input name="notes" label="Notes" required={false} />
+          </div>
+          <div className="row">
+            <button className="primary" disabled={busy}>
+              Save supplier
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setAdding(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+      <div className="profile-grid">
+        {state.suppliers.map((supplier) => (
+          <SupplierCard
+            key={supplier.id}
+            supplier={supplier}
+            expanded={open === supplier.id}
+            setExpanded={() =>
+              setOpen(open === supplier.id ? null : supplier.id)
+            }
+            {...props}
+          />
+        ))}
+      </div>
+      {!state.suppliers.length && (
+        <div className="panel empty">
+          <h3>No suppliers yet</h3>
+          <p>
+            Add each supplier once. Their transactions will stay grouped on one
+            card.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SupplierCard({
+  supplier,
+  expanded,
+  setExpanded,
+  state,
+  connected,
+  busy,
+  change,
+  run,
+}: WorkspaceProps & {
+  supplier: State["suppliers"][number];
+  expanded: boolean;
+  setExpanded: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [receipt, setReceipt] = useState<Attachment>();
+  const [lines, setLines] = useState([
+    { description: "", quantity: "1", rate: "" },
+  ]);
+  const due = supplier.transactions.reduce(
+    (sum, t) => sum + t.amount - t.paid,
+    0,
+  );
+  return (
+    <article className="panel profile-card">
+      <div className="profile-heading">
+        <div>
+          <p className="eyebrow">SUPPLIER</p>
+          <h3>{supplier.name}</h3>
+          <p className="muted">{supplier.contact || "No contact saved"}</p>
+        </div>
+        <div className="profile-total">
+          <small>OUTSTANDING</small>
+          <strong>{money(due)}</strong>
+        </div>
+      </div>
+      <div className="profile-metrics">
+        <span>
+          <b>{supplier.transactions.length}</b> transactions
+        </span>
+        <span>
+          <b>
+            {money(supplier.transactions.reduce((n, t) => n + t.amount, 0))}
+          </b>{" "}
+          purchased
+        </span>
+      </div>
+      <div className="row">
+        <button className="secondary" onClick={setExpanded}>
+          {expanded ? "Close records" : "View records"}
+        </button>
+        <button
+          className="text-button"
+          onClick={() => {
+            setExpanded();
+            setAdding(true);
+          }}
+        >
+          + Add transaction
+        </button>
+        <DangerButton
+          onClick={() => {
+            if (confirm(`Delete ${supplier.name} and all linked transactions?`))
+              run(() =>
+                change("delete_supplier", { id: supplier.id, confirmed: true }),
+              );
+          }}
+        >
+          Delete supplier
+        </DangerButton>
+      </div>
+      {expanded && (
+        <div className="profile-detail">
+          {adding && (
+            <form
+              className="record-form"
+              onSubmit={(e) => {
+                const f = fields(e);
+                run(async () => {
+                  await change("add_supplier_transaction", {
+                    supplierId: supplier.id,
+                    id: crypto.randomUUID(),
+                    reference: f.reference,
+                    invoiceDate: f.invoiceDate,
+                    dueDate: f.dueDate || undefined,
+                    amount: cents(f.amount),
+                    tax: cents(f.tax),
+                    discount: cents(f.discount),
+                    notes: f.notes,
+                    receipt,
+                    lines: lines
+                      .filter((x) => x.description && Number(x.rate) >= 0)
+                      .map((x) => ({
+                        description: x.description,
+                        quantity: Number(x.quantity),
+                        rate: cents(x.rate),
+                      })),
+                  });
+                  setAdding(false);
+                  setReceipt(undefined);
+                  setLines([{ description: "", quantity: "1", rate: "" }]);
+                });
+              }}
+            >
+              <h4>Add purchase / invoice</h4>
+              <div className="three-col">
+                <Input name="reference" label="Invoice / reference" />
+                <Input
+                  name="invoiceDate"
+                  label="Invoice date"
+                  type="date"
+                  value={today()}
+                />
+                <Input
+                  name="dueDate"
+                  label="Due date"
+                  type="date"
+                  required={false}
+                />
+              </div>
+              <div className="line-editor">
+                {lines.map((line, i) => (
+                  <div className="bill-line" key={i}>
+                    <input
+                      aria-label="Item description"
+                      placeholder="Item or service"
+                      value={line.description}
+                      onChange={(e) =>
+                        setLines(
+                          lines.map((x, n) =>
+                            n === i ? { ...x, description: e.target.value } : x,
+                          ),
+                        )
+                      }
+                    />
+                    <input
+                      aria-label="Quantity"
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={line.quantity}
+                      onChange={(e) =>
+                        setLines(
+                          lines.map((x, n) =>
+                            n === i ? { ...x, quantity: e.target.value } : x,
+                          ),
+                        )
+                      }
+                    />
+                    <input
+                      aria-label="Rate"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="Rate (RM)"
+                      value={line.rate}
+                      onChange={(e) =>
+                        setLines(
+                          lines.map((x, n) =>
+                            n === i ? { ...x, rate: e.target.value } : x,
+                          ),
+                        )
+                      }
+                    />
+                    <b>
+                      {money(cents(line.rate) * Number(line.quantity || 0))}
+                    </b>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => setLines(lines.filter((_, n) => n !== i))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() =>
+                    setLines([
+                      ...lines,
+                      { description: "", quantity: "1", rate: "" },
+                    ])
+                  }
+                >
+                  + Add line item
+                </button>
+              </div>
+              <div className="three-col">
+                <Input
+                  name="amount"
+                  label="Total if no line items (RM)"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value="0.01"
+                />
+                <Input
+                  name="tax"
+                  label="Tax / delivery (RM)"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value="0"
+                />
+                <Input
+                  name="discount"
+                  label="Discount (RM)"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value="0"
+                />
+              </div>
+              <Input name="notes" label="Transaction notes" required={false} />
+              <Upload
+                kind="receipts"
+                value={receipt}
+                onChange={setReceipt}
+                connected={connected}
+              />
+              <div className="row">
+                <button className="primary" disabled={busy}>
+                  Save transaction
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setAdding(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+          {supplier.transactions.map((transaction) => (
+            <SupplierTransactionRow
+              key={transaction.id}
+              supplier={supplier}
+              transaction={transaction}
+              connected={connected}
+              busy={busy}
+              change={change}
+              run={run}
+              state={state}
+            />
+          ))}
+          {!supplier.transactions.length && !adding && (
+            <p className="muted">No transactions recorded for this supplier.</p>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function SupplierTransactionRow({
+  supplier,
+  transaction,
+  connected,
+  busy,
+  change,
+  run,
+}: WorkspaceProps & {
+  supplier: State["suppliers"][number];
+  transaction: State["suppliers"][number]["transactions"][number];
+}) {
+  const [receipt, setReceipt] = useState<Attachment>();
+  const balance = transaction.amount - transaction.paid;
+  return (
+    <details className="record-details">
+      <summary>
+        <span>
+          {transaction.reference} · {transaction.invoiceDate}
+        </span>
+        <b>{money(balance)} due</b>
+      </summary>
+      <div className="transaction-summary">
+        <span>
+          Total <b>{money(transaction.amount)}</b>
+        </span>
+        <span>
+          Paid <b>{money(transaction.paid)}</b>
+        </span>
+        {transaction.dueDate && (
+          <span>
+            Due <b>{transaction.dueDate}</b>
+          </span>
+        )}
+        <ReceiptLink file={transaction.receipt} />
+      </div>
+      {!!transaction.lines.length && (
+        <div className="mini-table">
+          {transaction.lines.map((line, i) => (
+            <div key={i}>
+              <span>
+                {line.description} × {line.quantity}
+              </span>
+              <b>{money(Math.round(line.quantity * line.rate))}</b>
+            </div>
+          ))}
+        </div>
+      )}
+      {balance > 0 && (
+        <form
+          className="payment-inline"
+          onSubmit={(e) => {
+            const f = fields(e);
+            run(() =>
+              change("pay_supplier_transaction", {
+                supplierId: supplier.id,
+                transactionId: transaction.id,
+                paymentId: crypto.randomUUID(),
+                amount: cents(f.amount),
+                date: f.date,
+                method: f.method,
+                reference: f.reference,
+                receipt,
+              }),
+            );
+          }}
+        >
+          <h4>Record payment</h4>
+          <div className="three-col">
+            <Input
+              name="amount"
+              label="Amount (RM)"
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={(balance / 100).toFixed(2)}
+            />
+            <Input
+              name="date"
+              label="Payment date"
+              type="date"
+              value={today()}
+            />
+            <Method />
+          </div>
+          <Input name="reference" label="Payment reference" required={false} />
+          <Upload
+            kind="receipts"
+            value={receipt}
+            onChange={setReceipt}
+            connected={connected}
+          />
+          <button className="primary" disabled={busy}>
+            Record payment
+          </button>
+        </form>
+      )}
+      <DangerButton
+        onClick={() => {
+          if (
+            confirm(
+              `Delete transaction ${transaction.reference} and its payment records?`,
+            )
+          )
+            run(() =>
+              change("delete_supplier_transaction", {
+                supplierId: supplier.id,
+                transactionId: transaction.id,
+                confirmed: true,
+              }),
+            );
+        }}
+      >
+        Delete transaction
+      </DangerButton>
+    </details>
+  );
+}
+
+export function PayrollWorkspace(props: WorkspaceProps) {
+  const { state, busy, change, run } = props;
+  const [adding, setAdding] = useState(false);
+  const [workerType, setWorkerType] = useState<"permanent" | "part-time">(
+    "permanent",
+  );
+  const total = state.workers.reduce(
+    (sum, worker) => sum + worker.payments.reduce((n, p) => n + p.amount, 0),
+    0,
+  );
+  return (
+    <div className="workspace-stack">
+      <div className="stats">
+        <div className="stat">
+          <span>Workers</span>
+          <strong>{state.workers.length}</strong>
+          <small>
+            {state.workers.filter((w) => w.workerType === "permanent").length}{" "}
+            permanent ·{" "}
+            {state.workers.filter((w) => w.workerType === "part-time").length}{" "}
+            part-time
+          </small>
+        </div>
+        <div className="stat">
+          <span>Payroll paid</span>
+          <strong>{money(total)}</strong>
+          <small>All recorded pay runs</small>
+        </div>
+        <div className="stat">
+          <span>Permanent payroll</span>
+          <strong>
+            {money(
+              state.workers
+                .filter((w) => w.workerType === "permanent")
+                .reduce((n, w) => n + w.defaultRate, 0),
+            )}
+          </strong>
+          <small>Preset monthly base</small>
+        </div>
+        <div className="stat">
+          <span>Pay runs</span>
+          <strong>
+            {state.workers.reduce((n, w) => n + w.payments.length, 0)}
+          </strong>
+          <small>Recorded salary payments</small>
+        </div>
+      </div>
+      <div className="toolbar workspace-toolbar">
+        <p className="muted">
+          Set each worker’s normal rate once. Record each pay run with only the
+          adjustments that changed.
+        </p>
+        <button className="primary" onClick={() => setAdding((x) => !x)}>
+          + Add worker
+        </button>
+      </div>
+      {adding && (
+        <form
+          className="panel compact-form"
+          onSubmit={(e) => {
+            const f = fields(e);
+            run(async () => {
+              await change("add_worker", {
+                id: crypto.randomUUID(),
+                name: f.name,
+                contact: f.contact,
+                workerType,
+                basis: f.basis,
+                defaultRate: cents(f.defaultRate),
+                notes: f.notes,
+              });
+              setAdding(false);
+            });
+          }}
+        >
+          <h3>New worker</h3>
+          <div className="three-col">
+            <Input name="name" label="Worker name" />
+            <Input name="contact" label="Contact" required={false} />
+            <label>
+              Worker type
+              <select
+                name="workerType"
+                value={workerType}
+                onChange={(e) =>
+                  setWorkerType(e.target.value as typeof workerType)
+                }
+              >
+                <option value="permanent">Permanent</option>
+                <option value="part-time">Part-time</option>
+              </select>
+            </label>
+          </div>
+          <div className="three-col">
+            <label>
+              Pay basis
+              <select
+                name="basis"
+                value={workerType === "permanent" ? "monthly" : undefined}
+                disabled={workerType === "permanent"}
+              >
+                <option value="monthly">Monthly</option>
+                <option value="hourly">Hourly</option>
+                <option value="daily">Daily</option>
+                <option value="event">Per event</option>
+              </select>
+              {workerType === "permanent" && (
+                <input type="hidden" name="basis" value="monthly" />
+              )}
+            </label>
+            <Input
+              name="defaultRate"
+              label="Preset rate (RM)"
+              type="number"
+              step="0.01"
+              min="0.01"
+            />
+            <Input name="notes" label="Role / notes" required={false} />
+          </div>
+          <div className="row">
+            <button className="primary" disabled={busy}>
+              Save worker
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setAdding(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+      <div className="profile-grid">
+        {state.workers.map((worker) => (
+          <WorkerCard key={worker.id} worker={worker} {...props} />
+        ))}
+      </div>
+      {!state.workers.length && (
+        <div className="panel empty">
+          <h3>No workers yet</h3>
+          <p>
+            Add permanent and part-time workers, then record their pay from the
+            saved rate.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkerCard({
+  worker,
+  connected,
+  busy,
+  change,
+  run,
+  state,
+}: WorkspaceProps & { worker: State["workers"][number] }) {
+  const [expanded, setExpanded] = useState(false),
+    [paying, setPaying] = useState(false),
+    [receipt, setReceipt] = useState<Attachment>();
+  const month = today().slice(0, 7);
+  return (
+    <article className="panel profile-card">
+      <div className="profile-heading">
+        <div>
+          <p className="eyebrow">{worker.workerType.toUpperCase()}</p>
+          <h3>{worker.name}</h3>
+          <p className="muted">
+            {worker.contact || worker.notes || "No contact saved"}
+          </p>
+        </div>
+        <div className="profile-total">
+          <small>PRESET {worker.basis.toUpperCase()}</small>
+          <strong>{money(worker.defaultRate)}</strong>
+        </div>
+      </div>
+      <div className="profile-metrics">
+        <span>
+          <b>{worker.payments.length}</b> pay runs
+        </span>
+        <span>
+          <b>{money(worker.payments.reduce((n, p) => n + p.amount, 0))}</b> paid
+        </span>
+      </div>
+      <div className="row">
+        <button
+          className="primary"
+          onClick={() => {
+            setExpanded(true);
+            setPaying(true);
+          }}
+        >
+          Record pay
+        </button>
+        <button className="secondary" onClick={() => setExpanded((x) => !x)}>
+          {expanded ? "Close history" : "View history"}
+        </button>
+        <DangerButton
+          onClick={() => {
+            if (
+              confirm(`Delete ${worker.name} and all linked payroll records?`)
+            )
+              run(() =>
+                change("delete_worker", { id: worker.id, confirmed: true }),
+              );
+          }}
+        >
+          Delete worker
+        </DangerButton>
+      </div>
+      {expanded && (
+        <div className="profile-detail">
+          {paying && (
+            <form
+              className="record-form"
+              onSubmit={(e) => {
+                const f = fields(e);
+                run(async () => {
+                  await change("record_worker_payment", {
+                    workerId: worker.id,
+                    id: crypto.randomUUID(),
+                    period: f.period,
+                    periodStart: f.periodStart,
+                    periodEnd: f.periodEnd,
+                    units: Number(f.units),
+                    overtimeHours: Number(f.overtimeHours),
+                    overtimeRate: cents(f.overtimeRate),
+                    bonus: cents(f.bonus),
+                    allowance: cents(f.allowance),
+                    advance: cents(f.advance),
+                    deduction: cents(f.deduction),
+                    date: f.date,
+                    method: f.method,
+                    reference: f.reference,
+                    notes: f.notes,
+                    receipt,
+                  });
+                  setPaying(false);
+                  setReceipt(undefined);
+                });
+              }}
+            >
+              <h4>Record payroll payment</h4>
+              <p className="muted">
+                Base {money(worker.defaultRate)} per {worker.basis}. Add only
+                the adjustments for this pay run.
+              </p>
+              <div className="three-col">
+                <Input
+                  name="period"
+                  label="Payroll period"
+                  value={new Date(month + "-01T12:00:00").toLocaleString(
+                    "en-MY",
+                    { month: "long", year: "numeric" },
+                  )}
+                />
+                <Input
+                  name="periodStart"
+                  label="Period start"
+                  type="date"
+                  value={month + "-01"}
+                />
+                <Input
+                  name="periodEnd"
+                  label="Period end"
+                  type="date"
+                  value={month + "-28"}
+                />
+              </div>
+              <div className="three-col">
+                <Input
+                  name="units"
+                  label={
+                    worker.workerType === "permanent"
+                      ? "Months"
+                      : `${worker.basis} units`
+                  }
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value="1"
+                />
+                <Input
+                  name="overtimeHours"
+                  label="Overtime hours"
+                  type="number"
+                  step="0.25"
+                  min="0"
+                  value="0"
+                />
+                <Input
+                  name="overtimeRate"
+                  label="OT rate / hour (RM)"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value="0"
+                />
+              </div>
+              <div className="three-col">
+                <Input
+                  name="bonus"
+                  label="Bonus (RM)"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value="0"
+                />
+                <Input
+                  name="allowance"
+                  label="Allowance (RM)"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value="0"
+                />
+                <Input
+                  name="advance"
+                  label="Advance paid now (RM)"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value="0"
+                />
+              </div>
+              <div className="three-col">
+                <Input
+                  name="deduction"
+                  label="Deduction (RM)"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value="0"
+                />
+                <Input
+                  name="date"
+                  label="Payment date"
+                  type="date"
+                  value={today()}
+                />
+                <Method />
+              </div>
+              <div className="two-col">
+                <Input
+                  name="reference"
+                  label="Payment reference"
+                  required={false}
+                />
+                <Input name="notes" label="Notes" required={false} />
+              </div>
+              <Upload
+                kind="receipts"
+                value={receipt}
+                onChange={setReceipt}
+                connected={connected}
+              />
+              <div className="row">
+                <button className="primary" disabled={busy}>
+                  Record payment
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setPaying(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+          {worker.payments.map((payment) => (
+            <div className="pay-run" key={payment.id}>
+              <div>
+                <b>{payment.period}</b>
+                <small>
+                  {payment.periodStart} to {payment.periodEnd} ·{" "}
+                  {payment.method}
+                </small>
+                <small>
+                  Base {money(payment.baseRate * payment.units)} · OT{" "}
+                  {money(
+                    Math.round(payment.overtimeHours * payment.overtimeRate),
+                  )}{" "}
+                  · Bonus {money(payment.bonus)} · Advance{" "}
+                  {money(payment.advance)} · Deductions{" "}
+                  {money(payment.deduction)}
+                </small>
+                <ReceiptLink file={payment.receipt} />
+              </div>
+              <strong>{money(payment.amount)}</strong>
+              <DangerButton
+                onClick={() => {
+                  if (confirm(`Delete ${payment.period} payroll record?`))
+                    run(() =>
+                      change("delete_worker_payment", {
+                        workerId: worker.id,
+                        paymentId: payment.id,
+                        confirmed: true,
+                      }),
+                    );
+                }}
+              >
+                Delete
+              </DangerButton>
+            </div>
+          ))}
+          {!worker.payments.length && !paying && (
+            <p className="muted">No payroll payments recorded.</p>
+          )}
+        </div>
+      )}
+    </article>
   );
 }

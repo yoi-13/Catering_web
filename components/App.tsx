@@ -1,6 +1,13 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
-import { Accounts, ConfirmPayment, Upload, ReceiptLink } from "./Accounting";
+import {
+  ConfirmPayment,
+  Upload,
+  ReceiptLink,
+  SupplierWorkspace,
+  PayrollWorkspace,
+} from "./Accounting";
+import { Reports } from "./Reports";
 import type { Attachment } from "@/lib/domain";
 import {
   ArrowUpRight,
@@ -30,6 +37,7 @@ import {
   paid,
   money,
   today,
+  normalizeState,
   type State,
   type Order,
   type Menu,
@@ -60,6 +68,7 @@ const nav = [
   ["Finances", Wallet],
   ["Suppliers", Users],
   ["Payroll", Users],
+  ["Reports", Download],
   ["Settings", Settings],
 ] as const;
 export default function App({ connected }: { connected: boolean }) {
@@ -110,7 +119,7 @@ export default function App({ connected }: { connected: boolean }) {
         if (connected) await refresh();
         else {
           const raw = localStorage.getItem(KEY);
-          if (raw) setState(JSON.parse(raw));
+          if (raw) setState(normalizeState(JSON.parse(raw)));
         }
         const fragment = location.hash.slice(1);
         if (fragment.startsWith("track=")) {
@@ -436,12 +445,16 @@ export default function App({ connected }: { connected: boolean }) {
                   <h1>
                     {section === "Overview"
                       ? "A little clarity. A lot of possibility."
-                      : section}
+                      : section === "Reports"
+                        ? "Monthly performance"
+                        : section}
                   </h1>
                   <p className="muted">
                     {section === "Overview"
                       ? "Here’s what’s happening around your table."
-                      : "Keep the details organised, so every gathering runs smoothly."}
+                      : section === "Reports"
+                        ? "Review sales, cash flow, supplier costs and payroll in one place."
+                        : "Keep the details organised, so every gathering runs smoothly."}
                   </p>
                 </div>
                 {section === "Menus" && (
@@ -978,10 +991,8 @@ export default function App({ connected }: { connected: boolean }) {
                   </div>
                 </>
               )}
-              {(section === "Suppliers" || section === "Payroll") && (
-                <Accounts
-                  key={section}
-                  kind={section === "Suppliers" ? "supplier" : "payroll"}
+              {section === "Suppliers" && (
+                <SupplierWorkspace
                   state={state}
                   connected={connected}
                   busy={busy}
@@ -989,6 +1000,16 @@ export default function App({ connected }: { connected: boolean }) {
                   run={run}
                 />
               )}
+              {section === "Payroll" && (
+                <PayrollWorkspace
+                  state={state}
+                  connected={connected}
+                  busy={busy}
+                  change={change}
+                  run={run}
+                />
+              )}
+              {section === "Reports" && <Reports state={state} />}
               {section === "Settings" && (
                 <form
                   className="panel settings-form"

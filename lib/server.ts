@@ -1,7 +1,7 @@
 import "server-only";
 import { createClient } from "@supabase/supabase-js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { initial, type State } from "./domain";
+import { initial, normalizeState, type State } from "./domain";
 import { cookies } from "next/headers";
 const secret = () => {
   const s = process.env.SESSION_SECRET;
@@ -46,7 +46,7 @@ export async function read() {
   if (error)
     throw Error("Database unavailable. Apply the Supabase migration first.");
   return {
-    state: (data.data ?? structuredClone(initial)) as State,
+    state: normalizeState((data.data ?? structuredClone(initial)) as State),
     revision: data.revision as number,
   };
 }

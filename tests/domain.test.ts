@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initial, place, mutate, paid, type State } from "../lib/domain";
+import {
+  initial,
+  place,
+  mutate,
+  paid,
+  monthlyReport,
+  normalizeState,
+  type State,
+} from "../lib/domain";
 const data = () => ({
   name: "Test Guest",
   phone: "0123456789",
@@ -96,24 +104,43 @@ test("status transitions never reset payment history", () => {
   );
   assert.equal(paid(s, "order-1"), 22000);
 });
-test("supplier/payroll payments update ledger once and preserve period", () => {
+test("older bills migrate into grouped supplier and worker profiles", () => {
   const s = setup();
-  mutate(s, "bill", {
-    id: "b1",
-    party: "Demo worker",
-    kind: "payroll",
-    period: "October 2026",
-    amount: 150000,
-  });
-  const p = { id: "b1", paymentId: "bp1", amount: 50000, date: "2026-10-01" };
-  mutate(s, "paybill", p);
-  mutate(s, "paybill", p);
-  assert.equal(s.bills[0].paid, 50000);
-  assert.equal(s.entries.length, 1);
-  assert.equal(s.entries[0].kind, "expense");
-  assert.throws(() =>
-    mutate(s, "paybill", { ...p, paymentId: "bp2", amount: 100001 }),
+  s.bills.push(
+    {
+      id: "s1",
+      party: "Market",
+      kind: "supplier",
+      period: "INV-1",
+      amount: 5000,
+      paid: 0,
+      invoiceDate: "2026-10-01",
+    },
+    {
+      id: "s2",
+      party: "Market",
+      kind: "supplier",
+      period: "INV-2",
+      amount: 7000,
+      paid: 0,
+      invoiceDate: "2026-10-02",
+    },
+    {
+      id: "w1",
+      party: "Aina",
+      kind: "payroll",
+      period: "October",
+      amount: 150000,
+      paid: 150000,
+      invoiceDate: "2026-10-01",
+    },
   );
+  normalizeState(s);
+  assert.equal(s.bills.length, 0);
+  assert.equal(s.suppliers.length, 1);
+  assert.equal(s.suppliers[0].transactions.length, 2);
+  assert.equal(s.workers.length, 1);
+  assert.equal(s.workers[0].payments.length, 1);
 });
 test("minimum guests, valid dates, and positive money enforced", () => {
   const s = setup();
@@ -156,82 +183,26 @@ test("full confirmation uses only remaining balance", () => {
   assert.equal(paid(s, "order-1"), 22000);
   assert.equal(s.entries.length, 2);
 });
-const payroll = {
-  workerType: "permanent",
-  basis: "monthly",
-  rate: 300000,
-  units: 1,
-  periodStart: "2026-10-01",
-  periodEnd: "2026-10-31",
-  overtimeHours: 4,
-  overtimeRate: 2000,
-  allowance: 10000,
-  deduction: 5000,
-};
-test("permanent monthly payroll computes base plus overtime and adjustments on server", () => {
-  const s = setup();
-  mutate(s, "bill", {
-    id: "p1",
-    kind: "payroll",
-    party: "Worker",
-    period: "Oct 2026",
-    amount: 1,
-    payroll,
+const addSupplier = (s: State) =>
+  mutate(s, "add_supplier", {
+    id: "supplier-1",
+    name: "Fresh Market",
+    contact: "0123",
+    notes: "Produce",
   });
-  assert.equal(s.bills[0].amount, 313000);
-  assert.equal(s.bills[0].payroll?.rate, 300000);
-});
-test("part-time supports hourly, daily and per-event rates", () => {
-  for (const basis of ["hourly", "daily", "event"]) {
-    const s = setup();
-    mutate(s, "bill", {
-      id: "p1",
-      kind: "payroll",
-      party: "Worker",
-      period: "Oct 2026",
-      amount: 1,
-      payroll: {
-        ...payroll,
-        workerType: "part-time",
-        basis,
-        rate: 1500,
-        units: 12.5,
-        overtimeHours: 0,
-        allowance: 0,
-        deduction: 0,
-      },
-    });
-    assert.equal(s.bills[0].amount, 18750);
-  }
-});
-test("invalid payroll periods, mismatched bases and excessive deductions are rejected", () => {
-  const s = setup();
-  for (const p of [
-    { ...payroll, periodEnd: "2026-09-01" },
-    { ...payroll, basis: "hourly" },
-    { ...payroll, deduction: 1000000 },
-    { ...payroll, workerType: "part-time" },
-  ])
-    assert.throws(() =>
-      mutate(s, "bill", {
-        id: "p1",
-        kind: "payroll",
-        party: "Worker",
-        period: "Oct 2026",
-        amount: 1,
-        payroll: p,
-      }),
-    );
-  assert.equal(s.bills.length, 0);
-});
-test("supplier totals use item prices and charges, ignoring submitted total", () => {
-  const s = setup();
-  mutate(s, "bill", {
-    id: "s1",
-    kind: "supplier",
-    party: "Supplier",
-    period: "INV-001",
+const addSupplierTransaction = (
+  s: State,
+  id = "invoice-1",
+  reference = "INV-001",
+) =>
+  mutate(s, "add_supplier_transaction", {
+    supplierId: "supplier-1",
+    id,
+    reference,
+    invoiceDate: "2026-10-03",
+    dueDate: "2026-10-20",
     amount: 1,
+    notes: "",
     lines: [
       { description: "Rice", quantity: 2.5, rate: 1200 },
       { description: "Chicken", quantity: 3, rate: 2000 },
@@ -239,42 +210,124 @@ test("supplier totals use item prices and charges, ignoring submitted total", ()
     tax: 600,
     discount: 100,
   });
-  assert.equal(s.bills[0].amount, 9500);
-});
-test("supplier references cannot be accidentally duplicated", () => {
+test("one supplier groups transactions and computes itemized totals", () => {
   const s = setup();
-  const b = {
-    id: "s1",
-    kind: "supplier",
-    party: "Supplier",
-    period: "INV-001",
-    amount: 5000,
-  };
-  mutate(s, "bill", b);
-  assert.throws(() => mutate(s, "bill", { ...b, id: "s2" }));
-  assert.equal(s.bills.length, 1);
+  addSupplier(s);
+  addSupplierTransaction(s);
+  addSupplierTransaction(s, "invoice-2", "INV-002");
+  assert.equal(s.suppliers.length, 1);
+  assert.equal(s.suppliers[0].transactions.length, 2);
+  assert.equal(s.suppliers[0].transactions[1].amount, 9500);
+  assert.throws(() => addSupplierTransaction(s, "invoice-3", "INV-001"));
 });
-test("receipts and payment references survive settlement", () => {
+test("supplier payments post once and deletion removes linked ledger entries", () => {
   const s = setup();
-  mutate(s, "bill", {
-    id: "s1",
-    kind: "supplier",
-    party: "Supplier",
-    period: "INV-001",
-    amount: 5000,
-  });
-  const receipt = { path: "receipts/1234-abcd.pdf", name: "Invoice.pdf" };
-  mutate(s, "paybill", {
-    id: "s1",
-    amount: 2500,
-    paymentId: "p1",
-    date: "2026-10-01",
+  addSupplier(s);
+  addSupplierTransaction(s);
+  const payment = {
+    supplierId: "supplier-1",
+    transactionId: "invoice-1",
+    paymentId: "payment-1",
+    amount: 4500,
+    date: "2026-10-04",
     method: "Cash",
     reference: "CASH-1",
-    receipt,
+  };
+  mutate(s, "pay_supplier_transaction", payment);
+  mutate(s, "pay_supplier_transaction", payment);
+  assert.equal(s.suppliers[0].transactions[0].paid, 4500);
+  assert.equal(
+    s.entries.filter((e) => e.supplierTransactionId === "invoice-1").length,
+    1,
+  );
+  mutate(s, "delete_supplier_transaction", {
+    supplierId: "supplier-1",
+    transactionId: "invoice-1",
+    confirmed: true,
   });
-  assert.equal(s.entries[0].billId, "s1");
-  assert.deepEqual(s.entries[0].receipt, receipt);
-  assert.equal(s.entries[0].reference, "CASH-1");
-  assert.equal(s.bills[0].paid, 2500);
+  assert.equal(s.suppliers[0].transactions.length, 0);
+  assert.equal(
+    s.entries.filter((e) => e.supplierTransactionId === "invoice-1").length,
+    0,
+  );
+});
+const addWorker = (
+  s: State,
+  workerType: "permanent" | "part-time" = "permanent",
+) =>
+  mutate(s, "add_worker", {
+    id: "worker-1",
+    name: "Aina",
+    contact: "",
+    workerType,
+    basis: workerType === "permanent" ? "monthly" : "hourly",
+    defaultRate: workerType === "permanent" ? 300000 : 1500,
+    notes: "",
+  });
+const recordPay = (s: State, id = "pay-1", period = "October 2026") =>
+  mutate(s, "record_worker_payment", {
+    workerId: "worker-1",
+    id,
+    period,
+    periodStart: "2026-10-01",
+    periodEnd: "2026-10-31",
+    units: 10,
+    overtimeHours: 4,
+    overtimeRate: 2000,
+    bonus: 10000,
+    allowance: 5000,
+    advance: 3000,
+    deduction: 2000,
+    date: "2026-10-31",
+    method: "Bank transfer",
+    reference: "PAY-1",
+    notes: "",
+  });
+test("permanent worker reuses preset salary and adds payroll adjustments", () => {
+  const s = setup();
+  addWorker(s);
+  recordPay(s);
+  assert.equal(s.workers.length, 1);
+  assert.equal(s.workers[0].payments[0].units, 1);
+  assert.equal(s.workers[0].payments[0].amount, 324000);
+  assert.equal(s.entries[0].workerPaymentId, "pay-1");
+  assert.throws(() => recordPay(s, "pay-2"));
+});
+test("part-time worker pay uses saved rate times units", () => {
+  const s = setup();
+  addWorker(s, "part-time");
+  recordPay(s);
+  assert.equal(s.workers[0].payments[0].amount, 39000);
+});
+test("deleting a worker removes their payroll history from the ledger", () => {
+  const s = setup();
+  addWorker(s);
+  recordPay(s);
+  mutate(s, "delete_worker", { id: "worker-1", confirmed: true });
+  assert.equal(s.workers.length, 0);
+  assert.equal(s.entries.filter((e) => e.workerId === "worker-1").length, 0);
+});
+test("monthly report reconciles orders, supplier costs and payroll", () => {
+  const s = setup();
+  mutate(s, "confirm", confirm(5000));
+  addSupplier(s);
+  addSupplierTransaction(s);
+  mutate(s, "pay_supplier_transaction", {
+    supplierId: "supplier-1",
+    transactionId: "invoice-1",
+    paymentId: "supplier-pay",
+    amount: 4500,
+    date: "2026-10-04",
+    method: "Cash",
+    reference: "",
+  });
+  addWorker(s);
+  recordPay(s);
+  s.orders[0].date = "2026-10-15";
+  const report = monthlyReport(s, "2026-10");
+  assert.equal(report.orders.length, 1);
+  assert.equal(report.received, 5000);
+  assert.equal(report.supplierPaid, 4500);
+  assert.equal(report.payrollPaid, 324000);
+  assert.equal(report.netCash, -323500);
 });

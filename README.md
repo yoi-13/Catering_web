@@ -20,7 +20,9 @@ Open http://localhost:3000. Choose **Workspace**, username **demo**, password **
 - Private tracking codes, order summaries suitable for printing, controlled order statuses.
 - Bank transfer, merchant QR-image instructions and cash. Administrators manually verify and record payments.
 - Partial payments, refunds, outstanding balances, categorized expenses, date filtering and CSV export.
-- Supplier bills and approved payroll amounts by worker/pay period; partial settlement posts an expense once.
+- Reusable supplier profiles with itemized invoices, receipts, partial payments and transaction history.
+- Reusable permanent and part-time worker profiles with preset rates, payroll adjustments and receipts.
+- Monthly management reports with graphs, orders, supplier costs, payroll, cash movement and section printing.
 - Archive menus while retaining historical order snapshots.
 - Demo mode without external accounts, plus shared Supabase mode with server-only database access.
 
@@ -56,7 +58,7 @@ npm run typecheck
 npm run build
 ```
 
-The business-rule tests cover price snapshots, invalid dates, minimum guests, capacity/cancellations, payment/refund limits, duplicate ledger events, order transitions and payroll settlement.
+The business-rule tests cover price snapshots, invalid dates, minimum guests, capacity/cancellations, payment/refund limits, grouped supplier records, preset payroll, deletion cleanup and monthly report reconciliation.
 
 ## Self-host later
 
@@ -69,7 +71,7 @@ The application uses standard Node.js and can run on your own server with `npm c
 - There is one administrator account configured by environment variables. No staff roles, email notifications, gateway webhooks, password recovery or automated bank reconciliation yet.
 - QR images and receipt/invoice attachments are uploaded to private Supabase storage. Receipts accept images or PDF up to 3 MB and require administrator access; only the saved merchant QR image is publicly viewable. Browser printing creates an order summary; generated payment-receipt PDFs are not implemented.
 - Menus use illustrative emoji artwork. Packages are individually priced catalogue entries; configurable component bundles and photo uploads are future work.
-- Payroll calculates permanent monthly salaries and part-time hourly, daily or per-event earnings, plus entered overtime/allowances minus deductions. Statutory deduction rules, leave proration and worker assignment scheduling are not automated.
+- Payroll calculates permanent monthly salaries and part-time hourly, daily or per-event earnings, plus entered overtime, bonuses, allowances and advances minus deductions. Statutory deduction rules, leave proration and worker assignment scheduling are not automated.
 - Prices are in MYR. Dates and report cutoffs use UTC. Delivery fees, taxes, service-area rules and formal financial statements are not implemented.
 - Client demo state can be edited through developer tools. Connected mode enforces the rules on the server.
 - Duplicate IDs protect ledger retries and bill settlement. A retried checkout after an uncertain network failure should first check its tracking link; checkout idempotency is not yet implemented.
@@ -81,6 +83,8 @@ MIT for the new V1 code. Dependency licenses remain with their respective author
 
 ## V1 improvements — October 2026
 
-Suppliers and Payroll now have separate navigation, search, status filters, amounts due and payment history. Supplier invoices include item quantities/unit prices, charges, discounts, invoice/due dates, contacts and attachments. Payroll records preserve worker type, salary basis, period dates, rates, units and adjustments. Supplier/payroll payments save receipt attachments and references to the expense ledger. Existing V1 records are retained as legacy approved amounts.
+Suppliers and Payroll now use one profile card per supplier or worker. Supplier profiles hold itemized transactions, invoice and due dates, receipts, balances and payment history. Worker profiles hold their permanent or part-time classification and preset rate, so each pay run only needs its period and any overtime, bonus, allowance, advance or deduction. Linked transactions and ledger entries can be deleted together after an explicit confirmation. Existing V1 bills are converted into the grouped profiles automatically.
+
+Reports provides a monthly management view of order value, received money, supplier payments, payroll, other expenses, outstanding balances, guests and net cash movement. The full report, orders, supplier section and payroll section can be printed independently.
 
 Confirmation applies only to pending orders and requires money received unless the order was already fully paid. Repeated confirmation with the same payment ID does not duplicate the transaction. Existing confirmed orders are not retroactively marked paid.
